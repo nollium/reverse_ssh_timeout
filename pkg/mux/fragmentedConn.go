@@ -39,8 +39,8 @@ func NewFragmentCollector(localAddr net.Addr, remoteAddr net.Addr, onClosed func
 		onClose:     onClosed,
 	}
 
-	// Since the polling rate for a client is 10 ms, if they havent talked to us in any sense in 2 seconds they're dead
-	fc.isDead = time.AfterFunc(2*time.Second, func() {
+	// Since the polling rate for a client is 10 ms, if they havent talked to us in any sense in 10 seconds they're dead
+	fc.isDead = time.AfterFunc(10*time.Second, func() {
 		fc.Close()
 	})
 
@@ -56,7 +56,7 @@ func NewFragmentCollector(localAddr net.Addr, remoteAddr net.Addr, onClosed func
 }
 
 func (fc *fragmentedConnection) IsAlive() {
-	fc.isDead.Reset(2 * time.Second)
+	fc.isDead.Reset(10 * time.Second)
 }
 
 func (fc *fragmentedConnection) Read(b []byte) (n int, err error) {

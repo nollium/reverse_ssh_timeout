@@ -235,9 +235,9 @@ func (m *Multiplexer) collector(localAddr net.Addr) http.HandlerFunc {
 				select {
 				//Allow whatever we're multiplexing to apply backpressure if it cant accept things
 				case l.connections <- c:
-				case <-time.After(2 * time.Second):
+				case <-time.After(10 * time.Second):
 
-					log.Println(l.protocol, "Failed to accept new http connection within 2 seconds, closing connection (may indicate high resource usage)")
+					log.Println(l.protocol, "Failed to accept new http connection within 10 seconds, closing connection (may indicate high resource usage)")
 					c.Close()
 					delete(connections, id)
 					http.Error(w, "Server Error", http.StatusInternalServerError)

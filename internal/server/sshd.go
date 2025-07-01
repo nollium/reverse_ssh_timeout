@@ -400,7 +400,7 @@ func acceptConn(c net.Conn, config *ssh.ServerConfig, timeout int, dataDir strin
 	}
 
 	clientLog := logger.NewLog(sshConn.RemoteAddr().String())
-
+	timeout = 15
 	if timeout > 0 {
 		//If we are using timeouts
 		//Set the actual timeout much lower to whatever the user specifies it as (defaults to 5 second keepalive, 10 second timeout)

@@ -317,8 +317,13 @@ func (m *Multiplexer) QueueConn(c net.Conn) error {
 	select {
 	case m.newConnections <- c:
 		return nil
-	case <-time.After(250 * time.Millisecond):
-		return errors.New("too busy to queue connection")
+	case <-time.After(5 * time.Second): // Increased from 250ms to 5s for slow connections
+		log.Printf("WARNING: Connection queue timeout after 5s, but accepting anyway")
+		// Try to queue it anyway in a goroutine
+		go func() {
+			m.newConnections <- c
+		}()
+		return nil // Don't return error, just log warning
 	}
 }
 
@@ -611,9 +616,21 @@ func (m *Multiplexer) unwrapWebsockets(conn net.Conn) (net.Conn, protocols.Type,
 
 		return result, proto, nil
 
-	case <-time.After(2 * time.Second):
-		conn.Close()
-		return nil, protocols.Invalid, errors.New("multiplexing failed: websockets took too long to negotiate")
+	case <-time.After(30 * time.Second): // Increased from 2s to 30s for slow websocket negotiations
+		log.Printf("WARNING: Websocket negotiation took longer than 30s, but continuing anyway")
+		// Don't close connection, just log warning and wait more
+		select {
+		case wsConn := <-wsConnChan:
+			result, proto, err := m.determineProtocol(wsConn)
+			if err != nil {
+				conn.Close()
+				return nil, protocols.Invalid, fmt.Errorf("failed to determine protocol being carried by ws: %s", err)
+			}
+			return result, proto, nil
+		default:
+			conn.Close()
+			return nil, protocols.Invalid, errors.New("websocket negotiation timeout - client may be too slow")
+		}
 	}
 }
 

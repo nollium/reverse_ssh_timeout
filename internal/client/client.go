@@ -355,7 +355,9 @@ func Run(addr, fingerprint, proxyAddr, sni string, winauth bool) {
 
 	// fetch the environment variables, but the first proxy is done from the supplied proxyAddr arg
 	potentialProxies := getCaseInsensitiveEnv("http_proxy", "https_proxy")
-	triedProxyIndex := 0
+	var triedProxyIndex int
+	var reconnectDelay = time.Second * 5
+	const maxReconnectDelay = time.Minute * 5 // Cap at 5 minutes
 	initialProxyAddr := proxyAddr
 	for {
 		var conn net.Conn
@@ -475,7 +477,14 @@ func Run(addr, fingerprint, proxyAddr, sni string, winauth bool) {
 				return
 			}
 
-			<-time.After(10 * time.Second)
+			// Use same exponential backoff for initial connection failures
+			log.Printf("Retrying connection in %v...", reconnectDelay)
+			<-time.After(reconnectDelay)
+			
+			reconnectDelay *= 2
+			if reconnectDelay > maxReconnectDelay {
+				reconnectDelay = maxReconnectDelay
+			}
 			continue
 		}
 
@@ -483,6 +492,9 @@ func Run(addr, fingerprint, proxyAddr, sni string, winauth bool) {
 			// reset proxy counter after success, so we always check the avaliable proxies
 			triedProxyIndex = 0
 		}
+
+		// Reset reconnection delay on successful connection
+		reconnectDelay = time.Second * 5
 
 		log.Println("Successfully connnected", addr)
 
@@ -590,15 +602,13 @@ func Run(addr, fingerprint, proxyAddr, sni string, winauth bool) {
 				return
 			}
 
-			// Exponential backoff for reconnection
-			reconnectDelay := time.Second * 5
-			maxDelay := time.Minute * 2
+			// Exponential backoff for reconnection with indefinite retries
+			log.Printf("Reconnecting in %v...", reconnectDelay)
+			<-time.After(reconnectDelay)
 			
-			for reconnectDelay <= maxDelay {
-				log.Printf("Reconnecting in %v...", reconnectDelay)
-				<-time.After(reconnectDelay)
-				reconnectDelay *= 2
-				break // Only wait once per disconnection
+			reconnectDelay *= 2
+			if reconnectDelay > maxReconnectDelay {
+				reconnectDelay = maxReconnectDelay
 			}
 			continue
 		}

@@ -407,23 +407,23 @@ func acceptConn(c net.Conn, config *ssh.ServerConfig, timeout int, dataDir strin
 		realConn.Timeout = time.Duration(timeout*2) * time.Second
 
 		go func() {
-			retryCount := 0
-			maxRetries := 3
+			consecutiveFailures := 0
 			
 			for {
 				_, _, err = sshConn.SendRequest("keepalive-rssh@golang.org", true, []byte(fmt.Sprintf("%d", timeout)))
 				if err != nil {
-					retryCount++
-					if retryCount >= maxRetries {
-						clientLog.Info("Failed to send keepalive after %d retries: %v - assuming client has disconnected", maxRetries, err)
-						sshConn.Close()
-						return
-					}
-					clientLog.Warning("Failed to send keepalive (retry %d/%d): %v - will retry", retryCount, maxRetries, err)
-					time.Sleep(time.Duration(timeout) * time.Second) // Wait before retry
+					consecutiveFailures++
+					clientLog.Warning("Failed to send keepalive (failure #%d): %v - will keep retrying indefinitely", consecutiveFailures, err)
+					// Don't close connection, just keep trying
+					time.Sleep(time.Duration(timeout) * time.Second)
 					continue
 				}
-				retryCount = 0 // Reset on success
+				
+				if consecutiveFailures > 0 {
+					clientLog.Info("Keepalive recovered after %d failures", consecutiveFailures)
+					consecutiveFailures = 0 // Reset on success
+				}
+				
 				time.Sleep(time.Duration(timeout) * time.Second)
 			}
 		}()
@@ -511,3 +511,4 @@ func acceptConn(c net.Conn, config *ssh.ServerConfig, timeout int, dataDir strin
 		clientLog.Warning("Client connected but type was unknown, terminating: %s", sshConn.Permissions.Extensions["type"])
 	}
 }
+

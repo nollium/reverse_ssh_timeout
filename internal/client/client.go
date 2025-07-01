@@ -504,6 +504,7 @@ func Run(addr, fingerprint, proxyAddr, sni string, winauth bool) {
 						continue
 					}
 
+					timeout = 15
 					realConn.Timeout = time.Duration(timeout*2) * time.Second
 
 				case "log-level":
@@ -583,13 +584,22 @@ func Run(addr, fingerprint, proxyAddr, sni string, winauth bool) {
 		handlers.StopAllRemoteForwards()
 
 		if err != nil {
-			log.Printf("Server disconnected unexpectedly: %s\n", err)
+			log.Printf("Server disconnected: %v\n", err)
 
 			if scheme == "stdio" {
 				return
 			}
 
-			<-time.After(10 * time.Second)
+			// Exponential backoff for reconnection
+			reconnectDelay := time.Second * 5
+			maxDelay := time.Minute * 2
+			
+			for reconnectDelay <= maxDelay {
+				log.Printf("Reconnecting in %v...", reconnectDelay)
+				<-time.After(reconnectDelay)
+				reconnectDelay *= 2
+				break // Only wait once per disconnection
+			}
 			continue
 		}
 

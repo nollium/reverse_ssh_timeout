@@ -235,13 +235,14 @@ func (m *Multiplexer) collector(localAddr net.Addr) http.HandlerFunc {
 				select {
 				//Allow whatever we're multiplexing to apply backpressure if it cant accept things
 				case l.connections <- c:
-				case <-time.After(10 * time.Second):
-
-					log.Println(l.protocol, "Failed to accept new http connection within 10 seconds, closing connection (may indicate high resource usage)")
-					c.Close()
-					delete(connections, id)
-					http.Error(w, "Server Error", http.StatusInternalServerError)
-					return
+					// Connection accepted successfully
+				default:
+					// If we can't accept immediately, just log and continue instead of timing out
+					log.Printf("WARNING: HTTP connection queue full, but accepting anyway (remote: %s)", realConn.RemoteAddr())
+					// Force acceptance even if queue is full
+					go func() {
+						l.connections <- c
+					}()
 				}
 
 				http.Redirect(w, req, "/notification", http.StatusTemporaryRedirect)

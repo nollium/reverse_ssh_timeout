@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log"
 	"net"
 	"time"
 )
@@ -39,9 +40,10 @@ func NewFragmentCollector(localAddr net.Addr, remoteAddr net.Addr, onClosed func
 		onClose:     onClosed,
 	}
 
-	// Since the polling rate for a client is 10 ms, if they havent talked to us in any sense in 10 seconds they're dead
-	fc.isDead = time.AfterFunc(10*time.Second, func() {
-		fc.Close()
+	// Log warnings for inactive connections but don't kill them
+	fc.isDead = time.AfterFunc(30*time.Second, func() {
+		log.Printf("WARNING: HTTP polling connection inactive for 30s (remote: %s), but keeping alive", remoteAddr)
+		fc.isDead.Reset(30 * time.Second) // Reset for next warning
 	})
 
 	randomData := make([]byte, 16)
@@ -56,7 +58,7 @@ func NewFragmentCollector(localAddr net.Addr, remoteAddr net.Addr, onClosed func
 }
 
 func (fc *fragmentedConnection) IsAlive() {
-	fc.isDead.Reset(10 * time.Second)
+	fc.isDead.Reset(30 * time.Second)
 }
 
 func (fc *fragmentedConnection) Read(b []byte) (n int, err error) {

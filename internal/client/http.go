@@ -49,10 +49,17 @@ func NewHTTPConn(address string, connector func() (net.Conn, error)) (*HTTPConn,
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
 			},
+			// Remove all timeouts for infinite patience
+			DisableKeepAlives:     false,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       0, // No timeout
+			TLSHandshakeTimeout:   0, // No timeout
+			ExpectContinueTimeout: 0, // No timeout
 		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
+		Timeout: 0, // No timeout
 	}
 
 	s, err := keys.GetPrivateKey()
@@ -94,32 +101,42 @@ func (c *HTTPConn) startReadLoop() {
 	for {
 		select {
 		case <-c.done:
-
 			return
 		default:
 		}
 
-		resp, err := c.client.Get(c.address + "/push/" + strconv.Itoa(c.start) + "?id=" + c.ID)
-		if err != nil {
-			log.Println("error getting data: ", err)
-			c.Close()
-			return
+		// Retry logic for transient failures
+		maxRetries := 5
+		var resp *http.Response
+		var err error
+		
+		for retry := 0; retry < maxRetries; retry++ {
+			resp, err = c.client.Get(c.address + "/push/" + strconv.Itoa(c.start) + "?id=" + c.ID)
+			if err != nil {
+				if retry == maxRetries-1 {
+					log.Printf("WARNING: HTTP GET failed after %d retries: %v (continuing anyway)", maxRetries, err)
+					time.Sleep(5 * time.Second) // Wait before next attempt
+					continue // Don't close, just continue the outer loop
+				}
+				log.Printf("WARNING: HTTP GET failed (retry %d/%d): %v", retry+1, maxRetries, err)
+				time.Sleep(time.Second * time.Duration(retry+1)) // Exponential backoff
+				continue
+			}
+			break // Success
 		}
 
-		_, err = io.Copy(c.readBuffer, resp.Body)
-		if err != nil {
-			log.Println("error copying data: ", err)
-			c.Close()
-			return
+		if resp != nil {
+			_, err = io.Copy(c.readBuffer, resp.Body)
+			if err != nil {
+				log.Printf("WARNING: Failed to copy HTTP response data: %v (continuing)", err)
+			}
+			resp.Body.Close()
 		}
-
-		resp.Body.Close()
 
 		// Cache buster for middleware proxies
 		c.start++
 
 		time.Sleep(10 * time.Millisecond)
-
 	}
 }
 
@@ -142,15 +159,27 @@ func (c *HTTPConn) Write(b []byte) (n int, err error) {
 	default:
 	}
 
-	resp, err := c.client.Post(c.address+"/push?id="+c.ID, "application/octet-stream", bytes.NewBuffer(b))
-	if err != nil {
-		c.Close()
-		return 0, err
+	// Retry logic for transient failures
+	maxRetries := 5
+	
+	for retry := 0; retry < maxRetries; retry++ {
+		resp, err := c.client.Post(c.address+"/push?id="+c.ID, "application/octet-stream", bytes.NewBuffer(b))
+		if err != nil {
+			if retry == maxRetries-1 {
+				log.Printf("WARNING: HTTP POST failed after %d retries: %v (returning error)", maxRetries, err)
+				return 0, err // Return error but don't close connection
+			}
+			log.Printf("WARNING: HTTP POST failed (retry %d/%d): %v", retry+1, maxRetries, err)
+			time.Sleep(time.Second * time.Duration(retry+1)) // Exponential backoff
+			continue
+		}
+		resp.Body.Close()
+		return len(b), nil
 	}
-	resp.Body.Close()
 
-	return len(b), nil
+	return 0, fmt.Errorf("max retries exceeded for HTTP POST")
 }
+
 func (c *HTTPConn) Close() error {
 
 	c.readBuffer.Close()

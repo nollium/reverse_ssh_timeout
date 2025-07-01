@@ -407,13 +407,23 @@ func acceptConn(c net.Conn, config *ssh.ServerConfig, timeout int, dataDir strin
 		realConn.Timeout = time.Duration(timeout*2) * time.Second
 
 		go func() {
+			retryCount := 0
+			maxRetries := 3
+			
 			for {
 				_, _, err = sshConn.SendRequest("keepalive-rssh@golang.org", true, []byte(fmt.Sprintf("%d", timeout)))
 				if err != nil {
-					clientLog.Info("Failed to send keepalive, assuming client has disconnected")
-					sshConn.Close()
-					return
+					retryCount++
+					if retryCount >= maxRetries {
+						clientLog.Info("Failed to send keepalive after %d retries: %v - assuming client has disconnected", maxRetries, err)
+						sshConn.Close()
+						return
+					}
+					clientLog.Warning("Failed to send keepalive (retry %d/%d): %v - will retry", retryCount, maxRetries, err)
+					time.Sleep(time.Duration(timeout) * time.Second) // Wait before retry
+					continue
 				}
+				retryCount = 0 // Reset on success
 				time.Sleep(time.Duration(timeout) * time.Second)
 			}
 		}()

@@ -301,7 +301,7 @@ func forwardTCP(tunstats *stat) func(request *tcp.ForwarderRequest) {
 			Port: int(id.LocalPort),
 		}
 
-		outbound, err := net.DialTimeout("tcp", fwdDst.String(), 5*time.Second)
+		outbound, err := net.Dial("tcp", fwdDst.String())
 		if err != nil {
 
 			tunstats.tcp.failures.Add(1)

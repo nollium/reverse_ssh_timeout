@@ -67,24 +67,66 @@ func (sb *SyncBuffer) BlockingWrite(p []byte) (n int, err error) {
 		return 0, ErrClosed
 	}
 
-	// In instances that blocking write is being used, Write() is not, its implicit and bad but we assume the starting buffer is 0
-	n, err = sb.bb.Write(p)
-	if err != nil {
-		return 0, err
-	}
-	for {
-
+	// Enforce buffer size limits to prevent large data bursts
+	for sb.maxLength > 0 && sb.bb.Len() >= sb.maxLength {
+		// Buffer is full, wait for space to become available
 		sb.rwait.Signal()
 		sb.wwait.Wait()
-
+		
 		if sb.isClosed {
 			return 0, ErrClosed
 		}
+	}
 
-		if sb.bb.Len() == 0 {
-			return len(p), nil
+	// Write in chunks to avoid overwhelming the buffer
+	totalWritten := 0
+	for totalWritten < len(p) {
+		// Calculate how much we can write without exceeding buffer limit
+		chunkSize := len(p) - totalWritten
+		if sb.maxLength > 0 {
+			available := sb.maxLength - sb.bb.Len()
+			if available <= 0 {
+				// Buffer became full, wait for space
+				sb.rwait.Signal()
+				sb.wwait.Wait()
+				
+				if sb.isClosed {
+					return totalWritten, ErrClosed
+				}
+				continue
+			}
+			
+			if chunkSize > available {
+				chunkSize = available
+			}
+		}
+		
+		// Limit individual writes to prevent TLS record size issues
+		if chunkSize > 16384 { // 16KB chunks to stay within TLS record limits
+			chunkSize = 16384
+		}
+		
+		n, err := sb.bb.Write(p[totalWritten:totalWritten+chunkSize])
+		totalWritten += n
+		
+		if err != nil {
+			return totalWritten, err
+		}
+		
+		// Signal readers that data is available
+		sb.rwait.Signal()
+		
+		// If we wrote less than requested, wait for buffer space
+		if n < chunkSize {
+			sb.wwait.Wait()
+			
+			if sb.isClosed {
+				return totalWritten, ErrClosed
+			}
 		}
 	}
+
+	return totalWritten, nil
 }
 
 // Write to the internal in-memory buffer, will not block
@@ -96,6 +138,21 @@ func (sb *SyncBuffer) Write(p []byte) (n int, err error) {
 
 	if sb.isClosed {
 		return 0, ErrClosed
+	}
+
+	// Enforce buffer size limits to prevent large data bursts
+	if sb.maxLength > 0 && sb.bb.Len() >= sb.maxLength {
+		// Buffer is full, apply backpressure by only writing what fits
+		available := sb.maxLength - sb.bb.Len()
+		if available <= 0 {
+			// Buffer completely full, can't write anything
+			return 0, io.ErrShortWrite
+		}
+		
+		// Only write what fits in the buffer
+		if len(p) > available {
+			p = p[:available]
+		}
 	}
 
 	return sb.bb.Write(p)

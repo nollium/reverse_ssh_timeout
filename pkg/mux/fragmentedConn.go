@@ -12,7 +12,7 @@ import (
 
 var ErrClosed = errors.New("fragment collector has been closed")
 
-const maxBuffer = 8096
+const maxBuffer = 4096
 
 type fragmentedConnection struct {
 	done chan interface{}

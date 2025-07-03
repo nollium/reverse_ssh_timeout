@@ -228,7 +228,7 @@ func registerChannelCallbacks(connectionDetails string, user *users.User, chans 
 		log.Warning("Sent an invalid channel type %q", t)
 	}
 
-	return fmt.Errorf("connection terminated")
+	return fmt.Errorf("sshd.go: connection terminated")
 }
 
 func isDirEmpty(name string) bool {
@@ -400,12 +400,16 @@ func acceptConn(c net.Conn, config *ssh.ServerConfig, timeout int, dataDir strin
 	}
 
 	clientLog := logger.NewLog(sshConn.RemoteAddr().String())
-	timeout = 15
+	
+	// Don't override timeout with hardcoded value - use the server's --timeout parameter
+	// timeout = 15  // <-- REMOVED: This was killing HTTP tunnel connections
+	
 	if timeout > 0 {
 		//If we are using timeouts
 		//Set the actual timeout much lower to whatever the user specifies it as (defaults to 5 second keepalive, 10 second timeout)
 		realConn.Timeout = time.Duration(timeout*2) * time.Second
-
+		clientLog.Info("DEBUG: Connection timeout set to %d seconds (keepalive every %d seconds)", timeout*2, timeout)
+		
 		go func() {
 			consecutiveFailures := 0
 			
@@ -427,6 +431,8 @@ func acceptConn(c net.Conn, config *ssh.ServerConfig, timeout int, dataDir strin
 				time.Sleep(time.Duration(timeout) * time.Second)
 			}
 		}()
+	} else {
+		clientLog.Info("DEBUG: Connection timeouts disabled")
 	}
 
 	switch sshConn.Permissions.Extensions["type"] {

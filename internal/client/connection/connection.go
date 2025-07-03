@@ -33,9 +33,15 @@ func NewSession(connection ssh.Conn) *Session {
 
 func RegisterChannelCallbacks(chans <-chan ssh.NewChannel, log logger.Logger, handlers map[string]func(newChannel ssh.NewChannel, log logger.Logger)) error {
 	// Service the incoming Channel channel in go routine
+	channelCount := 0
+	
+	log.Info("DEBUG: Starting channel callback registration loop")
+	
 	for newChannel := range chans {
+		channelCount++
 		t := newChannel.ChannelType()
-		log.Info("Handling channel: %s", t)
+		log.Info("DEBUG: Handling channel #%d: %s", channelCount, t)
+		
 		if callBack, ok := handlers[t]; ok {
 			go callBack(newChannel, log)
 			continue
@@ -44,6 +50,8 @@ func RegisterChannelCallbacks(chans <-chan ssh.NewChannel, log logger.Logger, ha
 		newChannel.Reject(ssh.UnknownChannelType, fmt.Sprintf("unsupported channel type: %s", t))
 		log.Warning("Sent an invalid channel type %q", t)
 	}
+	log.Error("DEBUG: Channel loop terminated after handling %d channels - SSH connection likely closed", channelCount)
 
-	return fmt.Errorf("connection terminated")
+
+	return fmt.Errorf("connection.go: SSH channel loop terminated after %d channels", channelCount)
 }

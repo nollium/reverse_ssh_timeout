@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"time"
+	// "time"
 
 	"github.com/NHAS/reverse_ssh/internal"
 	"github.com/NHAS/reverse_ssh/pkg/logger"
@@ -22,7 +22,7 @@ func LocalForward(newChannel ssh.NewChannel, l logger.Logger) {
 		return
 	}
 
-	d := net.Dialer{Timeout: 5 * time.Second}
+	d := net.Dialer{Timeout: 0}
 
 	dest := net.JoinHostPort(drtMsg.Raddr, fmt.Sprintf("%d", drtMsg.Rport))
 	tcpConn, err := d.Dial("tcp", dest)
@@ -32,8 +32,6 @@ func LocalForward(newChannel ssh.NewChannel, l logger.Logger) {
 		return
 	}
 	defer tcpConn.Close()
-
-	d.Timeout = 0
 
 	connection, requests, err := newChannel.Accept()
 	if err != nil {

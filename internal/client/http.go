@@ -55,6 +55,11 @@ func NewHTTPConn(address string, connector func() (net.Conn, error)) (*HTTPConn,
 			IdleConnTimeout:       0, // No timeout
 			TLSHandshakeTimeout:   0, // No timeout
 			ExpectContinueTimeout: 0, // No timeout
+			// Add flow control settings
+			MaxIdleConnsPerHost:   1,   // Limit connections per host
+			MaxConnsPerHost:       1,   // Limit total connections per host
+			WriteBufferSize:       4096, // Limit write buffer size
+			ReadBufferSize:        4096, // Limit read buffer size
 		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -126,9 +131,23 @@ func (c *HTTPConn) startReadLoop() {
 		}
 
 		if resp != nil {
-			_, err = io.Copy(c.readBuffer, resp.Body)
-			if err != nil {
-				log.Printf("WARNING: Failed to copy HTTP response data: %v (continuing)", err)
+			// Read in small chunks to prevent large data bursts
+			buf := make([]byte, 4096) // 4KB chunks
+			for {
+				n, err := resp.Body.Read(buf)
+				if n > 0 {
+					_, writeErr := c.readBuffer.Write(buf[:n])
+					if writeErr != nil {
+						log.Printf("WARNING: Failed to write HTTP response data to buffer: %v", writeErr)
+						break
+					}
+				}
+				if err != nil {
+					if err != io.EOF {
+						log.Printf("WARNING: Failed to read HTTP response data: %v (continuing)", err)
+					}
+					break
+				}
 			}
 			resp.Body.Close()
 		}
@@ -159,25 +178,45 @@ func (c *HTTPConn) Write(b []byte) (n int, err error) {
 	default:
 	}
 
-	// Retry logic for transient failures
-	maxRetries := 5
+	// Write in chunks to prevent large data bursts
+	totalWritten := 0
+	chunkSize := 4096 // 4KB chunks
 	
-	for retry := 0; retry < maxRetries; retry++ {
-		resp, err := c.client.Post(c.address+"/push?id="+c.ID, "application/octet-stream", bytes.NewBuffer(b))
-		if err != nil {
-			if retry == maxRetries-1 {
-				log.Printf("WARNING: HTTP POST failed after %d retries: %v (returning error)", maxRetries, err)
-				return 0, err // Return error but don't close connection
-			}
-			log.Printf("WARNING: HTTP POST failed (retry %d/%d): %v", retry+1, maxRetries, err)
-			time.Sleep(time.Second * time.Duration(retry+1)) // Exponential backoff
-			continue
+	for totalWritten < len(b) {
+		end := totalWritten + chunkSize
+		if end > len(b) {
+			end = len(b)
 		}
-		resp.Body.Close()
-		return len(b), nil
+		
+		chunk := b[totalWritten:end]
+		
+		// Retry logic for transient failures
+		maxRetries := 5
+		
+		for retry := 0; retry < maxRetries; retry++ {
+			resp, err := c.client.Post(c.address+"/push?id="+c.ID, "application/octet-stream", bytes.NewBuffer(chunk))
+			if err != nil {
+				if retry == maxRetries-1 {
+					log.Printf("WARNING: HTTP POST failed after %d retries: %v (returning error)", maxRetries, err)
+					return totalWritten, err // Return partial write count
+				}
+				log.Printf("WARNING: HTTP POST failed (retry %d/%d): %v", retry+1, maxRetries, err)
+				time.Sleep(time.Second * time.Duration(retry+1)) // Exponential backoff
+				continue
+			}
+			resp.Body.Close()
+			break // Success
+		}
+		
+		totalWritten += len(chunk)
+		
+		// Small delay between chunks to prevent overwhelming the transport
+		if totalWritten < len(b) {
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 
-	return 0, fmt.Errorf("max retries exceeded for HTTP POST")
+	return totalWritten, nil
 }
 
 func (c *HTTPConn) Close() error {

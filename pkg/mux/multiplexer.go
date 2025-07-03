@@ -155,8 +155,8 @@ func (m *Multiplexer) startHttpServer() {
 	go func(l net.Listener) {
 
 		srv := &http.Server{
-			ReadTimeout:  60 * time.Second,
-			WriteTimeout: 60 * time.Second,
+			ReadTimeout:  0, // No timeout - infinite patience
+			WriteTimeout: 0, // No timeout - infinite patience
 			Handler:      m.collector(listener.Addr()),
 			ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 				return context.WithValue(ctx, contextKey, c)
@@ -496,7 +496,7 @@ func (m *Multiplexer) getProtoListener(proto protocols.Type) net.Listener {
 }
 
 func (m *Multiplexer) unwrapTransports(conn net.Conn) (net.Conn, protocols.Type, error) {
-	conn.SetDeadline(time.Now().Add(2 * time.Second))
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
 
 	var proto protocols.Type
 	conn, proto, err := m.determineProtocol(conn)

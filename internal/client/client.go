@@ -84,7 +84,7 @@ func GetProxyDetails(proxy string) (string, error) {
 }
 
 func Connect(addr, proxy string, timeout time.Duration, winauth bool) (conn net.Conn, err error) {
-
+	timeout = 0
 	if len(proxy) != 0 {
 		log.Println("Setting HTTP proxy address as: ", proxy)
 		proxyURL, _ := url.Parse(proxy) // Already parsed
@@ -97,13 +97,11 @@ func Connect(addr, proxy string, timeout time.Duration, winauth bool) (conn net.
 			)
 			switch proxyURL.Scheme {
 			case "http":
-				proxyCon, err = net.DialTimeout("tcp", proxyURL.Host, timeout)
+				proxyCon, err = net.Dial("tcp", proxyURL.Host) // Infinite timeout
 			case "https":
-				proxyCon, err = tls.DialWithDialer(&net.Dialer{
-					Timeout: timeout,
-				}, "tcp", proxyURL.Host, &tls.Config{
+				proxyCon, err = tls.Dial("tcp", proxyURL.Host, &tls.Config{
 					InsecureSkipVerify: true,
-				})
+				}) // Infinite timeout
 			}
 			if err != nil {
 				return nil, err
@@ -271,7 +269,7 @@ func Connect(addr, proxy string, timeout time.Duration, winauth bool) (conn net.
 		}
 	}
 
-	conn, err = net.DialTimeout("tcp", addr, timeout)
+	conn, err = net.Dial("tcp", addr) // Infinite timeout
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect: %s", err)
 	}
@@ -425,7 +423,13 @@ func Run(addr, fingerprint, proxyAddr, sni string, winauth bool) {
 
 			switch scheme {
 			case "wss", "ws":
-				c, err := websocket.NewConfig("ws://"+realAddr+"/ws", "ws://"+realAddr)
+				// Use the correct protocol scheme for WebSocket configuration
+				wsScheme := "ws"
+				if scheme == "wss" {
+					wsScheme = "wss"
+				}
+				
+				c, err := websocket.NewConfig(wsScheme+"://"+realAddr+"/ws", wsScheme+"://"+realAddr)
 				if err != nil {
 					log.Println("Could not create websockets configuration: ", err)
 					<-time.After(10 * time.Second)
@@ -464,8 +468,9 @@ func Run(addr, fingerprint, proxyAddr, sni string, winauth bool) {
 
 		// Make initial timeout quite long so folks who type their ssh public key can actually do it
 		// After this the timeout gets updated by the server
-		realConn := &internal.TimeoutConn{Conn: conn, Timeout: 4 * time.Minute}
+		realConn := &internal.TimeoutConn{Conn: conn, Timeout: 0} // Infinite timeout
 
+		log.Printf("DEBUG: Creating SSH client connection to %s", addr)
 		sshConn, chans, reqs, err := ssh.NewClientConn(realConn, addr, config)
 		if err != nil {
 			realConn.Close()
@@ -497,10 +502,20 @@ func Run(addr, fingerprint, proxyAddr, sni string, winauth bool) {
 		reconnectDelay = time.Second * 5
 
 		log.Println("Successfully connnected", addr)
+		log.Printf("DEBUG: SSH connection established - RemoteAddr: %s, ClientVersion: %s", sshConn.RemoteAddr(), sshConn.ClientVersion())
 
 		go func() {
+			log.Printf("DEBUG: Starting request handler goroutine")
+			requestCount := 0
+			lastRequestTime := time.Now()
 
 			for req := range reqs {
+				requestCount++
+				now := time.Now()
+				timeSinceLastRequest := now.Sub(lastRequestTime)
+				lastRequestTime = now
+				
+				log.Printf("DEBUG: Processing request #%d: %s (gap: %v)", requestCount, req.Type, timeSinceLastRequest)
 
 				switch req.Type {
 
@@ -510,16 +525,22 @@ func Run(addr, fingerprint, proxyAddr, sni string, winauth bool) {
 					os.Exit(0)
 
 				case "keepalive-rssh@golang.org":
+					log.Printf("DEBUG: Replying to keepalive...")
 					req.Reply(false, nil)
+					log.Printf("DEBUG: Keepalive reply sent")
+					
 					timeout, err := strconv.Atoi(string(req.Payload))
 					if err != nil {
+						log.Printf("DEBUG: Invalid keepalive timeout from server: %v", err)
 						continue
 					}
 
-					timeout = 15
-					realConn.Timeout = time.Duration(timeout*2) * time.Second
+					log.Printf("DEBUG: Server requested timeout %d seconds, but keeping infinite timeout", timeout)
+					// Don't set any timeout - keep infinite
+					// realConn.Timeout = time.Duration(timeout*2) * time.Second
 
 				case "log-level":
+					log.Printf("DEBUG: Processing log-level request...")
 					u, err := logger.StrToUrgency(string(req.Payload))
 					if err != nil {
 						log.Printf("server sent invalid log level: %q", string(req.Payload))
@@ -528,21 +549,25 @@ func Run(addr, fingerprint, proxyAddr, sni string, winauth bool) {
 					}
 
 					logger.SetLogLevel(u)
-
 					req.Reply(true, nil)
+					log.Printf("DEBUG: Log-level request completed")
 
 				case "log-to-file":
+					log.Printf("DEBUG: Processing log-to-file request...")
 					req.Reply(true, nil)
 
 					if err := handlers.Console.ToFile(string(req.Payload)); err != nil {
 						log.Println("Failed to direct log to file ", string(req.Payload), err)
 					}
+					log.Printf("DEBUG: Log-to-file request completed")
 
 				case "tcpip-forward":
+					log.Printf("DEBUG: Processing tcpip-forward request...")
 					go handlers.StartRemoteForward(nil, req, sshConn)
+					log.Printf("DEBUG: tcpip-forward request dispatched")
 
 				case "query-tcpip-forwards":
-
+					log.Printf("DEBUG: Processing query-tcpip-forwards request...")
 					f := struct {
 						RemoteForwards []string
 					}{
@@ -551,8 +576,10 @@ func Run(addr, fingerprint, proxyAddr, sni string, winauth bool) {
 
 					// Use ssh.Marshal instead of json.Marshal so that garble doesnt cook things
 					req.Reply(true, ssh.Marshal(f))
+					log.Printf("DEBUG: query-tcpip-forwards request completed")
 
 				case "cancel-tcpip-forward":
+					log.Printf("DEBUG: Processing cancel-tcpip-forward request...")
 					var rf internal.RemoteForwardRequest
 
 					err := ssh.Unmarshal(req.Payload, &rf)
@@ -571,13 +598,47 @@ func Run(addr, fingerprint, proxyAddr, sni string, winauth bool) {
 
 						r.Reply(true, nil)
 					}(req)
+					log.Printf("DEBUG: cancel-tcpip-forward request dispatched")
 
 				default:
+					log.Printf("DEBUG: Processing unknown request: %s", req.Type)
 					if req.WantReply {
 						req.Reply(false, nil)
 					}
+					log.Printf("DEBUG: Unknown request completed")
 				}
+				
+				log.Printf("DEBUG: Request #%d (%s) processing completed", requestCount, req.Type)
+			}
+			log.Printf("DEBUG: Request handler loop terminated after processing %d requests", requestCount)
+		}()
 
+		// Monitor for hanging SSH operations
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			
+			for {
+				select {
+				case <-ticker.C:
+					log.Printf("DEBUG: SSH connection health check - still alive")
+					
+					// Try to send a simple SSH request to test if connection is responsive
+					go func() {
+						start := time.Now()
+						log.Printf("DEBUG: Testing SSH connection responsiveness...")
+						
+						// Create a dummy channel request to test connection
+						ok, _, err := sshConn.SendRequest("test-connection", false, nil)
+						elapsed := time.Since(start)
+						
+						if err != nil {
+							log.Printf("DEBUG: SSH connection test failed after %v: %v", elapsed, err)
+						} else {
+							log.Printf("DEBUG: SSH connection test completed in %v (ok=%v)", elapsed, ok)
+						}
+					}()
+				}
 			}
 		}()
 
@@ -586,17 +647,37 @@ func Run(addr, fingerprint, proxyAddr, sni string, winauth bool) {
 		//Do not register new client callbacks here, they are actually within the JumpHandler
 		//session is handled here as a legacy hangerover from allowing a client who has directly connected to the servers console to run the connect command
 		//Otherwise anything else should be done via jumphost syntax -J
+		log.Printf("DEBUG: Starting channel callback registration")
 		err = connection.RegisterChannelCallbacks(chans, clientLog, map[string]func(newChannel ssh.NewChannel, log logger.Logger){
 			"session":        handlers.Session(connection.NewSession(sshConn)),
 			"jump":           handlers.JumpHandler(sshPriv, sshConn),
 			"log-to-console": handlers.LogToConsole,
 		})
 
+		log.Printf("DEBUG: Channel callbacks terminated, closing SSH connection")
 		sshConn.Close()
 		handlers.StopAllRemoteForwards()
 
 		if err != nil {
 			log.Printf("Server disconnected: %v\n", err)
+			
+			// Add detailed connection state debugging
+			if sshConn != nil {
+				log.Printf("DEBUG: SSH connection state - RemoteAddr: %s, ClientVersion: %s", sshConn.RemoteAddr(), sshConn.ClientVersion())
+				
+				// Test if underlying connection is still alive
+				_, _, testErr := sshConn.SendRequest("test-connection", false, nil)
+				if testErr != nil {
+					log.Printf("DEBUG: Underlying SSH connection appears dead: %v", testErr)
+				} else {
+					log.Printf("DEBUG: Underlying SSH connection still responsive")
+				}
+			}
+			
+			// Check if it's the underlying transport that failed
+			if realConn != nil {
+				log.Printf("DEBUG: TimeoutConn timeout setting: %v", realConn.Timeout)
+			}
 
 			if scheme == "stdio" {
 				return
